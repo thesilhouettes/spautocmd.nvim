@@ -1,8 +1,12 @@
 local logger = require "utils.log"
 local M = {
+  -- we remember which group is triggered
+  -- and which ones are not
   enabled_triggers = {},
 }
 
+-- for example, c will change *.c
+-- don't do anything if the filetype is wildcard *
 local function get_filter(filetype)
   local filter = "*"
   if filetype ~= "*" then
@@ -11,6 +15,7 @@ local function get_filter(filetype)
   return filter
 end
 
+-- this function checks if t is a table, if not output error
 local function is_table(t, name, msg)
   if type(t) ~= "table" then
     logger.error(msg or string.format("%s is not a table!", name))
@@ -19,7 +24,12 @@ local function is_table(t, name, msg)
   return true
 end
 
+-- this creates an augroup
+-- however if only_text is true, it will not be run with vim.cmd
+-- return the augroup string if only_text is true
 local function create_group(name, lines, only_text)
+  -- the group name is just arbitrary, hopefully it will not crash with other
+  -- plugins
   local text = string.format(
     [[
 augroup __spautocmd_%s
@@ -37,6 +47,8 @@ augroup END
   end
 end
 
+-- create autocmd <filetype> <event> <action> lines
+-- and return all lines as a single string
 local function create_lines(arr, event, filetype)
   local acc = ""
   for _, cmd in ipairs(arr) do
@@ -46,6 +58,9 @@ local function create_lines(arr, event, filetype)
   return acc
 end
 
+-- this creates a "trigger object"
+-- later it will be use in registeration of triggers
+-- see README about the options of trigger
 local function process_trigger(filetype, event, trigger)
   -- warn user if there is no key to start their auto commands
   if trigger.key == nil then
@@ -56,15 +71,22 @@ local function process_trigger(filetype, event, trigger)
   local trigger_object = {
     key = trigger.key,
     options = trigger.options,
+    -- this is just an arbitrary name that hopefully will not crash with other
+    -- plugins
     name = filetype .. "_" .. event,
   }
   -- we loop through the trigger table to find the commands
   local trigger_commands = create_lines(trigger, event, filetype)
+  -- trigger_object.augroup will hold the augroup string
+  -- it will only be applied if the user triggers it with keybindings
   trigger_object.augroup =
     create_group(trigger_object.name, trigger_commands, true)
   return trigger_object
 end
 
+-- this will process everything under a filetype
+-- for example if lua has BufRead, BufWrite it will process
+-- all of those
 local function process_event_handler(filetype, events)
   if not is_table(events, "filetype") then
     return false
@@ -97,6 +119,7 @@ local function process_event_handler(filetype, events)
   return triggers
 end
 
+-- this adds the key for adding the augruop and removing it
 local function register_trigger(filetype, trigger)
   -- it will ignore the trigger if no key is set
   for event_name, args in pairs(trigger) do
@@ -105,13 +128,13 @@ local function register_trigger(filetype, trigger)
     key, _ = string.gsub(key, "<localleader>", vim.g.localleader)
     -- fellow neovim exports, please help me
     vim.keymap.set("n", key, function()
-      if not M.enabled_triggers[filetype] then
+      if not M.enabled_triggers[args.name] then
         vim.cmd(args.augroup)
         logger.log(
           "Bold",
           string.format("enabling %s %s", filetype, event_name)
         )
-        M.enabled_triggers[filetype] = true
+        M.enabled_triggers[args.name] = true
       else
         -- disable the group
         logger.log(
@@ -119,12 +142,13 @@ local function register_trigger(filetype, trigger)
           string.format("disabling %s %s", filetype, event_name)
         )
         create_group(args.name, "", false)
-        M.enabled_triggers[filetype] = false
+        M.enabled_triggers[args.name] = false
       end
     end, args.options)
   end
 end
 
+-- users will call this function to set up the autocmds
 M.setup = function(opts)
   -- setup some bold colours
   vim.cmd "highlight Bold cterm=Bold gui=Bold"
@@ -140,7 +164,11 @@ M.setup = function(opts)
     return false
   end
 
+  -- all_handlers are basically useless, but may be useful
+  -- it will be returned at the end of this setup function
   local all_handlers = {}
+  -- process_event_handler only handles one filetype at a time
+  -- we loop through all filetypes and pass it to the function
   for filetype, events in pairs(opts.cmds) do
     local s = process_event_handler(filetype, events)
     if not s then
@@ -150,6 +178,7 @@ M.setup = function(opts)
     else
       all_handlers[filetype] = s
       -- check if s is {}, if not register the triggers
+      -- {} means no triggers
       if next(s) ~= nil then
         register_trigger(filetype, s)
       end
